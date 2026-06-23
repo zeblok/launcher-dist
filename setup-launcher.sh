@@ -9,9 +9,14 @@
 # while your application SOURCE CODE stays private in a separate repo. This file
 # is safe to hand to customers and to commit anywhere.
 #
+# Docker is a prerequisite. This script installs Docker Engine + the Compose
+# plugin automatically if Docker is not already present, and skips that step if
+# it already is. Disable the behaviour with INSTALL_DOCKER=0.
+#
 # Usage:
 #   ./setup-launcher.sh            # install / upgrade to the LATEST release
 #   ./setup-launcher.sh v2.1.0     # install a specific release tag
+#   INSTALL_DOCKER=0 ./setup-launcher.sh   # skip the Docker prerequisite step
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
@@ -21,6 +26,7 @@ DIST_REPO="zeblok/launcher-dist"   # PUBLIC repo that hosts the .deb release ass
 ASSET_REGEX='_amd64\.deb'          # which asset to pick from a release
 PKG_NAME="zbl-launcher"            # dpkg package name (used for the version check)
 VERSION="${1:-}"                   # optional release tag; empty = latest release
+INSTALL_DOCKER="${INSTALL_DOCKER:-1}"  # 1 = auto-install Docker if missing, 0 = skip
 # -----------------------------------------------------------------------------
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
@@ -35,6 +41,63 @@ setup_sudo() {
   else
     die "Root privileges required (install 'sudo' or run this script as root)."
   fi
+}
+
+# Ensure Docker Engine + the Compose plugin are installed. Idempotent: if Docker
+# is already present this does nothing. Disable entirely with INSTALL_DOCKER=0.
+ensure_docker() {
+  [ "$INSTALL_DOCKER" = "1" ] || { log "INSTALL_DOCKER=0 - skipping the Docker prerequisite."; return; }
+
+  if command -v docker >/dev/null 2>&1; then
+    log "Docker already installed ($(docker --version 2>/dev/null)) - skipping."
+    return
+  fi
+
+  log "Docker not found - installing Docker Engine + Compose plugin ..."
+
+  # Docker publishes separate apt repos for ubuntu and debian; detect which one.
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  local docker_distro codename
+  case "${ID:-ubuntu}" in
+    ubuntu) docker_distro="ubuntu"; codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}" ;;
+    debian) docker_distro="debian"; codename="${VERSION_CODENAME:-}" ;;
+    *)
+      if printf '%s' "${ID_LIKE:-}" | grep -q debian && ! printf '%s' "${ID_LIKE:-}" | grep -q ubuntu; then
+        docker_distro="debian"; codename="${VERSION_CODENAME:-}"
+      else
+        docker_distro="ubuntu"; codename="${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}"
+      fi ;;
+  esac
+  [ -n "$codename" ] || die "Could not determine the distro codename for the Docker apt repo."
+
+  # prerequisites + Docker's GPG key
+  $SUDO apt-get update
+  $SUDO apt-get install -y ca-certificates curl
+  $SUDO install -m 0755 -d /etc/apt/keyrings
+  $SUDO curl -fsSL "https://download.docker.com/linux/$docker_distro/gpg" -o /etc/apt/keyrings/docker.asc
+  $SUDO chmod a+r /etc/apt/keyrings/docker.asc
+
+  # add the repo (architecture + codename auto-detected)
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$docker_distro $codename stable" \
+    | $SUDO tee /etc/apt/sources.list.d/docker.list >/dev/null
+
+  # install engine + CLI + containerd + buildx + compose plugin
+  $SUDO apt-get update
+  $SUDO apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+  # enable + start the service now and on boot (skipped if there is no systemd)
+  if command -v systemctl >/dev/null 2>&1; then
+    $SUDO systemctl enable --now docker || warn "Could not enable/start the docker service automatically."
+  fi
+
+  # optional convenience: let the invoking non-root user run docker without sudo
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    $SUDO usermod -aG docker "$SUDO_USER" || true
+    log "Added '$SUDO_USER' to the 'docker' group (log out and back in for it to take effect)."
+  fi
+
+  log "Docker installed: $(docker --version 2>/dev/null)."
 }
 
 # Resolve the download URL of the .deb asset for the chosen release using the
@@ -55,6 +118,7 @@ resolve_deb_url() {
 main() {
   command -v curl >/dev/null 2>&1 || die "'curl' is required but not installed."
   setup_sudo
+  ensure_docker          # install Docker first if it's missing (prerequisite)
 
   log "Looking up the ${VERSION:-latest} release of $DIST_REPO ..."
   local url
@@ -71,7 +135,7 @@ main() {
 
   log "Installing (apt resolves any dependencies automatically) ..."
   if ! $SUDO apt-get install -y "$deb"; then
-    warn "apt install failed — falling back to dpkg and fixing dependencies ..."
+    warn "apt install failed - falling back to dpkg and fixing dependencies ..."
     $SUDO dpkg -i "$deb" || true
     $SUDO apt-get install -f -y
   fi
