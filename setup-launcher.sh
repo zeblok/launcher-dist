@@ -25,7 +25,7 @@ set -euo pipefail
 DIST_REPO="zeblok/launcher-dist"   # PUBLIC repo that hosts the .deb release assets
 ASSET_REGEX='_amd64\.deb'          # which asset to pick from a release
 PKG_NAME="zbl-launcher"            # dpkg package name (used for the version check)
-VERSION="${1:-}"                   # optional release tag; empty = latest release
+REQ_VERSION="${1:-}"               # optional release tag; empty = latest release
 INSTALL_DOCKER="${INSTALL_DOCKER:-1}"  # 1 = auto-install Docker if missing, 0 = skip
 # -----------------------------------------------------------------------------
 
@@ -55,7 +55,10 @@ ensure_docker() {
 
   log "Docker not found - installing Docker Engine + Compose plugin ..."
 
-  # Docker publishes separate apt repos for ubuntu and debian; detect which one.
+  # Read distro info from /etc/os-release. Declare the fields we read as LOCAL
+  # FIRST, so that file's own VERSION=... line cannot clobber this script's
+  # variables (it defines VERSION, which would otherwise break the release lookup).
+  local ID="" ID_LIKE="" VERSION_CODENAME="" UBUNTU_CODENAME=""
   # shellcheck disable=SC1091
   . /etc/os-release
   local docker_distro codename
@@ -104,8 +107,8 @@ ensure_docker() {
 # PUBLIC GitHub API. A public repo needs no authentication to read releases.
 resolve_deb_url() {
   local api
-  if [ -n "$VERSION" ]; then
-    api="https://api.github.com/repos/$DIST_REPO/releases/tags/$VERSION"
+  if [ -n "$REQ_VERSION" ]; then
+    api="https://api.github.com/repos/$DIST_REPO/releases/tags/$REQ_VERSION"
   else
     api="https://api.github.com/repos/$DIST_REPO/releases/latest"
   fi
@@ -120,7 +123,7 @@ main() {
   setup_sudo
   ensure_docker          # install Docker first if it's missing (prerequisite)
 
-  log "Looking up the ${VERSION:-latest} release of $DIST_REPO ..."
+  log "Looking up the ${REQ_VERSION:-latest} release of $DIST_REPO ..."
   local url
   url="$(resolve_deb_url)" || true
   [ -n "$url" ] || die "Could not find a *${ASSET_REGEX} asset in that release (check DIST_REPO / VERSION)."
