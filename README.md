@@ -87,6 +87,8 @@ Your settings are kept safe when you update.
 ```bash
 zbl-launcher status     # is it running?
 zbl-launcher logs -f    # watch what it's doing (press Ctrl+C to stop)
+sudo systemctl stop mongod
+sudo systemctl disable mongod
 zbl-launcher restart    # turn it off and on again
 zbl-launcher version    # which version is installed
 ```
